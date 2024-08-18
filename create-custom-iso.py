@@ -1,8 +1,8 @@
 # Copyright 2024 Broadcom. All Rights Reserved.
 # SPDX-License-Identifier: BSD-2-Clause
 
-""" 
-This module provides functions for imaging an ESXi host.
+"""
+This module provides functions for preparting ESXi Hosts for VCF Environment
 
 ==============================================
 Created by: Lakshmanan Shanmugam
@@ -10,12 +10,12 @@ Authors:    Lakshmanan Shanmugam, Sowjanya V
 ==============================================
 
 Description:
-Generate a single ISO image for a group of servers using the standard ESXi installation ISO image, 
-an input JSON file, and a firstboot-scripts file containing post-install commands. 
+Generate a single ISO image for a group of servers using the standard ESXi installation ISO image,
+an input JSON file, and a firstboot-scripts file containing post-install commands.
 The JSON file specifies the network and other details required for the installation
 
 Example:
-python create-custom-iso.py -j re-image-hosts.json
+python create-custom-iso.py -j hosts_info.json
 """
 import re
 import hashlib
@@ -27,7 +27,7 @@ import ipaddress
 import subprocess
 import argparse
 import os
-import psutil       
+import psutil
 import shutil
 from LogUtility import logger
 import maskpass
@@ -85,12 +85,12 @@ def case_insensitive_search_and_replace(file_path, search_word, replace_word):
     """
     This function is used to find and replace a word.
     """
-    with open(file_path, 'r') as file: 
+    with open(file_path, 'r') as file:
         file_contents = file.read()
         pattern = re.compile(re.escape(search_word), re.IGNORECASE)
         updated_contents = pattern.sub(replace_word, file_contents)
 
-    with open(file_path, 'w') as file: 
+    with open(file_path, 'w') as file:
         file.write(updated_contents)
 
 def validate_ip(ip):
@@ -111,7 +111,7 @@ def validate_ip(ip):
             return False
     else:
         return False
-   
+
 def validate_mac(mac):
     """
     This function is used to check if the given macaddress is valid.
@@ -130,13 +130,13 @@ def validate_json(json_data):
     validate_set_dns = json_data.get('dns', None)
     validate_set_hosts = ['macAddress', 'mgmtIpv4', 'mgmtGateway', 'mgmtNetmask']
     if validate_set_dns:
-        for validate_item in validate_set_dns: 
+        for validate_item in validate_set_dns:
             if not validate_ip(validate_item):
                 error_string = True
                 logger.error(f"Invalid data is provided in JSON for the nameserver: '{validate_item}.'")
 
     for host_data in json_data['hosts']:
-        for validate_item in validate_set_hosts: 
+        for validate_item in validate_set_hosts:
             if validate_item == 'macAddress':
                 if not validate_mac(host_data[validate_item]):
                     error_string = True
@@ -148,7 +148,7 @@ def validate_json(json_data):
                         logger.error(f"Invalid data is provided in JSON for '{validate_item}' for the host {host_data['hostName']}.")
                 else:
                     break
-  
+
     if error_string:
         logger.error("Validation of JSON for valid IP address and MAC address failed.")
         return False
@@ -205,7 +205,7 @@ def validate_iso_chksum(iso_file_name, chksum):
     """
     This function is used to verify the checksum for the provided ISO image.
     """
-    calculated_chksum = hashlib.md5(open(iso_file_name,'rb').read()).hexdigest() 
+    calculated_chksum = hashlib.md5(open(iso_file_name,'rb').read()).hexdigest()
     if calculated_chksum == chksum:
         logger.info("The checksum has been matched, proceeding.")
         return True
@@ -223,7 +223,7 @@ def build_custom_image(json_data, encrypted_root_pwd, iso_suffix=None):
     mnt_folder = constants.ESXI_CDROM_MOUNT_DIR
     esxi_root_pwd = encrypted_root_pwd
     esxi_eula = (json_data['AcceptEsxiLicenseAgreement']).strip()
-    
+
     #validate esxi eula value
     if not esxi_eula == "Yes":
         logger.error("ESXi license not accepted. Please accept the ESXi license agreement by providing the option 'Yes' in the JSON file")
@@ -249,10 +249,10 @@ def build_custom_image(json_data, encrypted_root_pwd, iso_suffix=None):
     if not os.path.exists(constants.LOG_PATH):
         os.makedirs(constants.LOG_PATH)
     if  os.path.exists(mnt_folder):
-        os.rmdir(mnt_folder) 
+        os.rmdir(mnt_folder)
     os.makedirs(mnt_folder)
     os.makedirs(temp_folder)
-    
+
     # mount the ISO file, copy the contents into the temp folder and umount
     run_subprocess_cmd(f'mount -o loop {esxi_iso_file} {mnt_folder}', "Mounting ISO")
     run_subprocess_cmd(f'cp -r {mnt_folder}/* {temp_folder}', "Copying the ISO")
@@ -269,21 +269,55 @@ def build_custom_image(json_data, encrypted_root_pwd, iso_suffix=None):
     case_insensitive_search_and_replace(boot_config_file_path, 'kernelopt=runweasel cdromBoot', 'kernelopt=runweasel ks=cdrom:/KS.CFG')
     case_insensitive_search_and_replace(boot_config_file_path2, 'kernelopt=runweasel cdromBoot', 'kernelopt=runweasel ks=cdrom:/KS.CFG')
     #Create KS.CFG
-    temp_path =  os.path.join(temp_folder, 'KS.CFG') 
-    ks_file = open(temp_path, 'w+') 
+    temp_path =  os.path.join(temp_folder, 'KS.CFG')
+    ks_file = open(temp_path, 'w+')
     # Add primary info into the KS.CFG
     ks_file.write(f'{esxi_eula_value} \n')
     ks_file.write(f'rootpw --iscrypted {esxi_root_pwd}')
     ks_file.write('%include /tmp/pre_script.cfg\n')
     ks_file.write('reboot \n')
     # Add firstboot
-    ks_file.write('\n%firstboot --interpreter=busybox\n')   
+    ks_file.write('\n%firstboot --interpreter=busybox\n')
     # Add post installation commands from firstboot-scripts.txt
     file_path = "firstboot-scripts.txt"
-    with open(file_path, "r") as file: 
+
+    vlan_list = []
+    disclaimer = "# Copyright 2024 Broadcom. All Rights Reserved\n# SPDX-License-Identifier: BSD-2-Clause\n"
+    ssh_service = "\n# Enable the SSH service\nvim-cmd hostsvc/enable_ssh\nvim-cmd hostsvc/start_ssh\n"
+    ntp_service = "\n# Add NTP Servers\nesxcli system ntp set --enabled=true"
+    vm_network_vlan = "\n# Update vlan ID for VM Network\nesxcli network vswitch standard portgroup set --portgroup-name 'VM Network' --vlan-id"
+    # check if VLANs are unique
+    for esxihost in json_data["hosts"]:
+        vlan_list.append(esxihost["mgmtVlanId"])
+    vlans = set(vlan_list)
+    unique_vlans = list(vlans)
+    if len(unique_vlans) > 1:
+        print("mgmtVlanId are not unique")
+        print(f"The following VLANs are observed --> {unique_vlans}")
+    else:
+        fb_obj = open(file_path, "w+")
+        print("mgmtVlanId are unique and now lets start creating firstboot-scripts.txt")
+        fb_obj.write(disclaimer)
+        fb_obj.write(ssh_service)
+        # enable SSH Shell if requested
+        if json_data["EnableSSHShell"] == "Yes":
+            fb_obj.write("\n# Enable the SSH Shell service\nvim-cmd hostsvc/enable_esx_shell\nvim-cmd hostsvc/start_esx_shell\n")
+        # set ntp configuration
+        if len(json_data["ntp"]) ==1:
+            fb_obj.write(f"{ntp_service} -s={json_data['ntp'][0]}\n")
+        if len(json_data["ntp"]) ==2:
+            fb_obj.write(f"{ntp_service} -s={json_data['ntp'][0]} -s={json_data['ntp'][1]}\n")
+        elif len(json_data["ntp"]) >2:
+            print("Only two NTP Servers are supported")
+        # update VLAN on VM Network PG
+        fb_obj.write(f"{vm_network_vlan} {unique_vlans[0]}")
+        fb_obj.close()
+    with open(file_path, "r") as file:
         file_contents = file.read()
     for line in (file_contents):
         ks_file.write(line)
+    # Copying file in local directory for using other purposes
+
     # Add network and install media info under pre-script for each host
     ks_file.write('\n\n%pre --interpreter=busybox \n')
     for host in json_data['hosts']:
@@ -291,7 +325,7 @@ def build_custom_image(json_data, encrypted_root_pwd, iso_suffix=None):
         clear_part = host.get('clearPart')
         install_disk = (host['installDisk']).strip()
         mgmt_ipv4 = host['mgmtIpv4']
-        vlan = (host['mgmtVlanId']).strip()     
+        vlan = (host['mgmtVlanId']).strip()
         ks_file.write(f'if esxcfg-nics -l | grep -q "{server_mac_adress}"\n')
         ks_file.write('then\n')
         if clear_part:
@@ -310,7 +344,7 @@ def build_custom_image(json_data, encrypted_root_pwd, iso_suffix=None):
             else:
                 network_cmd = f'network --bootproto=static --ip={mgmt_ipv4} --netmask={mgmt_net_mask} --gateway={mgmt_gw} --vlanid={vlan} --hostname={mgmt_hostname} --device={server_mac_adress}'
         ks_file.write(f'echo {network_cmd} >> /tmp/pre_script.cfg \n')
-        logger.debug(f'The value provided for the network is "{network_cmd}" for the host with the MAC address {server_mac_adress}')          
+        logger.debug(f'The value provided for the network is "{network_cmd}" for the host with the MAC address {server_mac_adress}')
 
         allowed_install_disks = {'usb', 'local'}
         if install_disk not in allowed_install_disks and not install_disk.startswith('--'):
@@ -328,6 +362,8 @@ def build_custom_image(json_data, encrypted_root_pwd, iso_suffix=None):
             logger.debug(f'The value provided for the install disk is "{install_disk}" for the host with the MAC address {server_mac_adress}')
         ks_file.write("fi\n")
     ks_file.close()
+    dest_path = "/root/"
+    shutil.copy(temp_path, dest_path)
     #Create ISO with updated KS file and remove temp folder
     if iso_suffix:
         iso_file_name = f'{esxi_iso_file.split(".iso")[0]}-{iso_suffix}.iso'
@@ -335,7 +371,7 @@ def build_custom_image(json_data, encrypted_root_pwd, iso_suffix=None):
         iso_file_name = f'{esxi_iso_file.split(".iso")[0]}-{time.strftime("%Y%m%d-%H%M")}.iso'
     cmd=f'mkisofs -relaxed-filenames  -quiet  -J -R -o {iso_file_name} -b isolinux.bin -c boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table -eltorito-alt-boot -e efiboot.img -no-emul-boot {temp_folder}'
     run_subprocess_cmd(cmd,"Create an ISO with the updated KS file")
-    md5_chksum=hashlib.md5(open(iso_file_name,'rb').read()).hexdigest() 
+    md5_chksum=hashlib.md5(open(iso_file_name,'rb').read()).hexdigest()
     # Delete the temp folder and all of its contents
     shutil.rmtree(temp_folder)
     shutil.rmtree("./temp")
@@ -349,7 +385,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     rootw_pwd=generate_encrypted_root_pwd()
-    with open(args.json) as file_handle: 
+    with open(args.json) as file_handle:
         json_file = json.load(file_handle)
 
     # Create custom ISO
